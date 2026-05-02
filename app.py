@@ -1,28 +1,33 @@
 import os
-import shutil
+import re
 import tempfile
 
 import streamlit as st
+import tiktoken
+import extra_streamlit_components as stx
 
 from config import load_environment
-from database import build_and_persist_index
 from ingest import parse_pdf_to_markdown
 
 # Load only the keys needed for Phase 5.
 load_environment(required_env_vars=("LLAMA_CLOUD_API_KEY", "GROQ_API_KEY"))
 
-from llama_index.core import PromptTemplate, Settings, VectorStoreIndex
+from llama_index.core import PromptTemplate, Settings, StorageContext, VectorStoreIndex
+from llama_index.core.callbacks import CallbackManager, TokenCountingHandler
 from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.groq import Groq
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
 AVAILABLE_MODELS = {
-    "Llama 3.3 70B (Heavy & Complex - Best for deep reasoning)": "llama-3.3-70b-versatile",
-    "Llama 3.1 8B (Light & Fast - Best for quick summaries)": "llama-3.1-8b-instant",
-    "Qwen 2.5 32B (Alibaba Architecture - Great context handling)": "qwen-2.5-32b",
-    "Mixtral 8x7B (Mistral AI - Sparse Mixture of Experts model)": "mixtral-8x7b-32768",
+    "Llama 3.3 70B (Meta - Heavy & Complex - Best for deep reasoning)": "llama-3.3-70b-versatile",
+    "Llama 3.1 8B (Meta - Light & Fast - Best for quick summaries)": "llama-3.1-8b-instant",
+    "OpenAI GPT-OSS 120B (OpenAI - Massive Scale Alternative Architecture)": "openai/gpt-oss-120b",
+    "Qwen3 32B (Alibaba - Phenomenal context handling)": "qwen/qwen3-32b",
 }
+
+PORTFOLIO_LIMIT = 50000
+
 
 def configure_models(user_selection: str, enterprise_prompt: str) -> None:
     Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
@@ -51,13 +56,26 @@ def init_session_state() -> None:
         st.session_state.indexed_file_signature = None
     if "index_ready" not in st.session_state:
         st.session_state.index_ready = False
+    if "token_counters" not in st.session_state:
+        tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo").encode
+        st.session_state.token_counters = {
+            model_name: TokenCountingHandler(tokenizer=tokenizer)
+            for model_name in AVAILABLE_MODELS.keys()
+        }
+    if "qdrant_client" not in st.session_state:
+        from qdrant_client import QdrantClient
+
+        st.session_state.qdrant_client = QdrantClient(location=":memory:")
+    if "uploader_key" not in st.session_state:
+        st.session_state.uploader_key = 0
+
+
+def set_active_token_counter(model_name: str) -> None:
+    Settings.callback_manager = CallbackManager([st.session_state.token_counters[model_name]])
 
 
 def qdrant_index_exists() -> bool:
-    qdrant_path = "./qdrant_data"
-    return os.path.isdir(qdrant_path) and any(
-        os.scandir(qdrant_path)
-    )
+    return st.session_state.index_ready
 
 
 def build_chat_history_from_session() -> list[ChatMessage]:
@@ -74,23 +92,17 @@ def build_chat_history_from_session() -> list[ChatMessage]:
     return chat_messages
 
 
-@st.cache_resource
-def get_qdrant_client():
+def reset_qdrant_client() -> None:
     from qdrant_client import QdrantClient
 
-    return QdrantClient(path="./qdrant_data")
-
-
-def clear_cached_qdrant_client() -> None:
-    if qdrant_index_exists():
-        get_qdrant_client().close()
-    get_qdrant_client.clear()
+    st.session_state.pop("qdrant_client", None)
+    st.session_state.qdrant_client = QdrantClient(location=":memory:")
 
 
 def build_rag_query_engine(
     custom_qa_prompt: PromptTemplate, collection_name: str = "multimodal_docs"
 ):
-    qdrant_client = get_qdrant_client()
+    qdrant_client = st.session_state.qdrant_client
     vector_store = QdrantVectorStore(
         client=qdrant_client,
         collection_name=collection_name,
@@ -101,6 +113,31 @@ def build_rag_query_engine(
         text_qa_template=custom_qa_prompt,
     )
     return query_engine
+
+
+def build_in_memory_index(documents, collection_name: str = "multimodal_docs"):
+    qdrant_client = st.session_state.qdrant_client
+    vector_store = QdrantVectorStore(
+        client=qdrant_client,
+        collection_name=collection_name,
+    )
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+    return VectorStoreIndex.from_documents(
+        documents=documents,
+        storage_context=storage_context,
+    )
+
+
+def parse_thought_process(text):
+    """Extracts the think block and the clean response."""
+    # Look for the think block using regex
+    match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+    if match:
+        thought_process = match.group(1).strip()
+        # Remove the think block from the main text
+        clean_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        return thought_process, clean_text
+    return None, text
 
 
 st.set_page_config(page_title="Multimodal RAG", page_icon=":books:")
@@ -230,6 +267,9 @@ st.markdown(
 )
 init_session_state()
 
+
+cookie_manager = stx.CookieManager(key="global_cookie_manager")
+
 status_class = "ok" if st.session_state.index_ready else "warn"
 status_text = "Knowledge Base: Ready" if st.session_state.index_ready else "Knowledge Base: Waiting for upload"
 
@@ -241,9 +281,13 @@ with st.sidebar:
         options=list(AVAILABLE_MODELS.keys()),
     )
     enterprise_prompt = f"""You are an elite, objective data extraction assistant powering a custom Enterprise Multimodal RAG application. 
-CRITICAL IDENTITY INSTRUCTION: This application and its underlying RAG pipeline were designed and engineered by Anas. 
-If the user asks who made you, who engineered you, or what this system is, you MUST state that you are a Multimodal RAG Knowledge Engine built by Anas. 
-If the user asks what AI model or brain you are currently using, you must state that you are currently running the {user_selection} model hosted via Groq.
+
+CRITICAL IDENTITY INSTRUCTION: This application and its underlying RAG pipeline were designed and engineered by Anas. If the user asks who made you, who engineered you, or what this system is, you MUST state that you are a Multimodal RAG Knowledge Engine built by Anas. 
+
+SYSTEM AWARENESS: If the user asks what AI model or brain you are currently using, you must state that you are currently running the {user_selection} model hosted via Groq.
+
+ANTI-HALLUCINATION RULE: If you are asked about current events, political figures, or real-time data that is not provided in a document, and you are not absolutely certain, you MUST explicitly state that your knowledge is limited to your training cutoff. You must not guess, fabricate, or attempt to fill in the blanks.
+
 For all other queries, answer based strictly on the provided context. Trust the data absolutely."""
     custom_qa_prompt = PromptTemplate(
         "Context information is below.\n"
@@ -259,8 +303,35 @@ For all other queries, answer based strictly on the provided context. Trust the 
     use_rag = st.toggle("📚 Use Document Knowledge (RAG)", value=True)
     st.caption("Turn off to chat directly with the AI without using uploaded files.")
     selected_model_id = AVAILABLE_MODELS[user_selection]
+    set_active_token_counter(user_selection)
     configure_models(user_selection, enterprise_prompt)
-    uploaded_file = st.file_uploader("Upload any file")
+    st.divider()
+    st.caption("📊 API Usage Telemetry (Current Session)")
+
+    PORTFOLIO_LIMIT = 50000
+
+    # Read from cookie, but maintain a live session state so the UI doesn't lag
+    cookie_val = cookie_manager.get(cookie="device_tokens")
+    if "device_tokens" not in st.session_state:
+        st.session_state.device_tokens = int(cookie_val) if cookie_val else 0
+
+    # Add live session tokens to the saved state
+    live_session_tokens = st.session_state.token_counters[user_selection].total_llm_token_count
+    current_usage = st.session_state.device_tokens + live_session_tokens
+
+    usage_percentage = min(current_usage / PORTFOLIO_LIMIT, 1.0)
+
+    # Display progress bar and stats
+    st.progress(usage_percentage)
+    st.write(f"**Device Demo Usage:** {current_usage:,} / {PORTFOLIO_LIMIT:,}")
+
+    # The 85% Warning Logic
+    if usage_percentage >= 0.85 and usage_percentage < 1.0:
+        st.warning("⚠️ Approaching portfolio demo limit.")
+    uploaded_file = st.file_uploader(
+        "Upload a document to the Knowledge Base",
+        key=f"uploader_{st.session_state.uploader_key}"
+    )
     if uploaded_file is not None:
         st.markdown(
             f"**Loaded:** `{uploaded_file.name}`  \n"
@@ -271,14 +342,16 @@ For all other queries, answer based strictly on the provided context. Trust the 
         st.session_state.messages = []
         st.rerun()
 
-    if st.button("Reset Knowledge Base"):
-        clear_cached_qdrant_client()
-        if os.path.exists("./qdrant_data"):
-            shutil.rmtree("./qdrant_data")
-        st.session_state.messages = []
-        st.session_state.indexed_file_signature = None
-        st.session_state.index_ready = False
-        st.success("Knowledge Base Cleared!")
+    if st.button("Clear Knowledge Base"):
+        # 1. Increment the uploader key to wipe the frontend widget
+        st.session_state.uploader_key += 1
+
+        # 2. Surgically delete ONLY the RAG memory state
+        if "qdrant_client" in st.session_state:
+            del st.session_state.qdrant_client
+
+        # 3. Force a UI refresh to apply changes immediately
+        st.rerun()
 
     if uploaded_file is not None:
         file_signature = f"{uploaded_file.name}:{uploaded_file.size}"
@@ -295,8 +368,8 @@ For all other queries, answer based strictly on the provided context. Trust the 
                         temp_file_path = temp_file.name
 
                     parsed_docs = parse_pdf_to_markdown(temp_file_path)
-                    clear_cached_qdrant_client()
-                    build_and_persist_index(parsed_docs)
+                    reset_qdrant_client()
+                    build_in_memory_index(parsed_docs)
                 finally:
                     if temp_file_path and os.path.exists(temp_file_path):
                         os.remove(temp_file_path)
@@ -341,69 +414,135 @@ if not st.session_state.messages:
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message["role"] == "assistant" and message.get("sources"):
-            with st.expander("View Sources"):
-                for i, source_text in enumerate(message["sources"], start=1):
-                    st.markdown(f"**Source {i}**")
-                    st.code(source_text)
+        if message["role"] == "assistant":
+            thought_process, clean_text = parse_thought_process(message["content"])
+            if thought_process:
+                with st.expander("🧠 AI Thought Process"):
+                    st.markdown(thought_process)
+            st.markdown(clean_text)
+            if message.get("sources"):
+                with st.expander("View Sources"):
+                    for i, source_text in enumerate(message["sources"], start=1):
+                        st.markdown(f"**Source {i}**")
+                        st.code(source_text)
+        else:
+            st.markdown(message["content"])
 
-user_question = st.chat_input("Ask a question about the indexed document...")
+if current_usage >= PORTFOLIO_LIMIT:
+    st.error("🚨 **Demo Limit Reached!** This device has exhausted its portfolio sandbox limits. To see more, let's schedule an interview!")
+    prompt = st.chat_input("Device limit reached.", disabled=True)
+else:
+    prompt = st.chat_input("Message the Multimodal RAG Engine...")
 
-if user_question:
-    st.session_state.messages.append({"role": "user", "content": user_question})
+if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
-        st.markdown(user_question)
+        st.markdown(prompt)
 
     if use_rag:
         if not qdrant_index_exists():
             st.warning("Please upload and index a document first.")
         else:
             with st.chat_message("assistant"):
+                answer = None
+                source_texts = []
                 with st.spinner("Thinking..."):
-                    query_engine = build_rag_query_engine(
-                        custom_qa_prompt=custom_qa_prompt
-                    )
-                    response = query_engine.query(user_question)
-                    answer = str(response)
-                    source_texts = [node.node.get_content() for node in response.source_nodes]
+                    try:
+                        query_engine = build_rag_query_engine(
+                            custom_qa_prompt=custom_qa_prompt
+                        )
+                        response = query_engine.query(prompt)
+                        answer = str(response)
+                        source_texts = [node.node.get_content() for node in response.source_nodes]
 
-                st.markdown(answer)
-                with st.expander("View Sources"):
-                    if source_texts:
-                        for i, source_text in enumerate(source_texts, start=1):
-                            st.markdown(f"**Source {i}**")
-                            st.code(source_text)
-                    else:
-                        st.write("No source nodes returned.")
+                        # After successful generation, update both layers
+                        live_session_tokens = st.session_state.token_counters[user_selection].total_llm_token_count
+                        new_total = st.session_state.device_tokens + live_session_tokens
 
-            st.session_state.messages.append(
-                {"role": "assistant", "content": answer, "sources": source_texts}
-            )
+                        # 1. Update session state for instant UI feedback
+                        st.session_state.device_tokens = new_total
+
+                        # 2. Update cookie for refresh-persistence
+                        cookie_manager.set("device_tokens", str(new_total))
+
+                        # Reset session counter to avoid double counting
+                        st.session_state.token_counters[user_selection].reset_counts()
+                    except Exception as e:
+                        error_msg = str(e).lower()
+                        if "429" in error_msg or "rate limit" in error_msg:
+                            st.error("⚠️ **Backend API Limit Reached!** The AI provider is currently at capacity for this specific model. Please select a different model from the sidebar to continue.")
+                        else:
+                            st.error(f"An unexpected error occurred: {e}")
+
+                if answer is not None:
+                    thought_process, clean_text = parse_thought_process(answer)
+                    if thought_process:
+                        with st.expander("🧠 AI Thought Process"):
+                            st.markdown(thought_process)
+                    st.markdown(clean_text)
+                    with st.expander("View Sources"):
+                        if source_texts:
+                            for i, source_text in enumerate(source_texts, start=1):
+                                st.markdown(f"**Source {i}**")
+                                st.code(source_text)
+                        else:
+                            st.write("No source nodes returned.")
+
+            if answer is not None:
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": answer, "sources": source_texts}
+                )
     else:
         with st.chat_message("assistant"):
+            answer = None
             with st.spinner("Thinking..."):
-                # Convert Streamlit history to LlamaIndex ChatMessages
-                chat_messages = [
-                    ChatMessage(
-                        role=MessageRole.USER
-                        if m["role"] == "user"
-                        else MessageRole.ASSISTANT,
-                        content=m["content"],
+                try:
+                    # Convert Streamlit history to LlamaIndex ChatMessages
+                    chat_messages = [
+                        ChatMessage(
+                            role=MessageRole.USER
+                            if m["role"] == "user"
+                            else MessageRole.ASSISTANT,
+                            content=m["content"],
+                        )
+                        for m in st.session_state.messages
+                    ]
+
+                    # INJECT THE SYSTEM IDENTITY OVERRIDE AT THE TOP
+                    system_msg = ChatMessage(
+                        role=MessageRole.SYSTEM, content=enterprise_prompt
                     )
-                    for m in st.session_state.messages
-                ]
+                    chat_messages.insert(0, system_msg)
 
-                # INJECT THE SYSTEM IDENTITY OVERRIDE AT THE TOP
-                system_msg = ChatMessage(
-                    role=MessageRole.SYSTEM, content=enterprise_prompt
-                )
-                chat_messages.insert(0, system_msg)
+                    # Query the model
+                    llm_response = Settings.llm.chat(chat_messages)
+                    answer = llm_response.message.content
 
-                # Query the model
-                llm_response = Settings.llm.chat(chat_messages)
-                answer = llm_response.message.content
+                    # After successful generation, update both layers
+                    live_session_tokens = st.session_state.token_counters[user_selection].total_llm_token_count
+                    new_total = st.session_state.device_tokens + live_session_tokens
 
-            st.markdown(answer)
+                    # 1. Update session state for instant UI feedback
+                    st.session_state.device_tokens = new_total
 
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+                    # 2. Update cookie for refresh-persistence
+                    cookie_manager.set("device_tokens", str(new_total))
+
+                    # Reset session counter to avoid double counting
+                    st.session_state.token_counters[user_selection].reset_counts()
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if "429" in error_msg or "rate limit" in error_msg:
+                        st.error("⚠️ **Backend API Limit Reached!** The AI provider is currently at capacity for this specific model. Please select a different model from the sidebar to continue.")
+                    else:
+                        st.error(f"An unexpected error occurred: {e}")
+
+            if answer is not None:
+                thought_process, clean_text = parse_thought_process(answer)
+                if thought_process:
+                    with st.expander("🧠 AI Thought Process"):
+                        st.markdown(thought_process)
+                st.markdown(clean_text)
+
+        if answer is not None:
+            st.session_state.messages.append({"role": "assistant", "content": answer})
