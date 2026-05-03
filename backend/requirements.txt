@@ -1,0 +1,12 @@
+streamlit
+extra-streamlit-components
+python-dotenv
+llama-index
+llama-parse
+llama-index-llms-groq
+llama-index-embeddings-huggingface
+llama-index-vector-stores-qdrant
+qdrant-client
+tiktoken
+fastapi
+uvicorn
