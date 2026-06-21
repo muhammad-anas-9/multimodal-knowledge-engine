@@ -5,6 +5,7 @@ llama-index
 llama-parse
 llama-index-llms-groq
 llama-index-embeddings-fastembed
+fastembed
 llama-index-vector-stores-qdrant
 qdrant-client
 tiktoken
