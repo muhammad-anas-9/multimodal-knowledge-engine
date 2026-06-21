@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
 from llama_index.core.llms import ChatMessage, MessageRole
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.embeddings.fastembed import FastEmbedEmbedding
 from llama_index.llms.groq import Groq
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_parse import LlamaParse
@@ -35,8 +35,7 @@ PORTFOLIO_LIMIT = 50000
 qdrant_client = QdrantClient(location=":memory:")
 tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo").encode
 
-Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
-
+Settings.embed_model = FastEmbedEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 class ChatRequest(BaseModel):
     message: str
