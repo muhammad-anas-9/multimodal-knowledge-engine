@@ -1,0 +1,7 @@
+frontend/
+.streamlit/
+qdrant_data/
+storage/
+test_pdf.pdf
+__pycache__/
+*.pyc
