@@ -10,3 +10,4 @@ qdrant-client
 tiktoken
 fastapi
 uvicorn
+duckduckgo-search
