@@ -22,7 +22,7 @@ def build_query_engine(collection_name: str = "multimodal_docs"):
     """Load local Qdrant index and return a query engine."""
     Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
     Settings.llm = Groq(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         temperature=0.0,
         system_prompt=ENTERPRISE_PROMPT,
     )

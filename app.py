@@ -20,10 +20,10 @@ from llama_index.llms.groq import Groq
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
 AVAILABLE_MODELS = {
-    "Llama 3.3 70B (Meta - Heavy & Complex - Best for deep reasoning)": "llama-3.3-70b-versatile",
-    "Llama 3.1 8B (Meta - Light & Fast - Best for quick summaries)": "llama-3.1-8b-instant",
-    "OpenAI GPT-OSS 120B (OpenAI - Massive Scale Alternative Architecture)": "openai/gpt-oss-120b",
-    "Qwen3 32B (Alibaba - Phenomenal context handling)": "qwen/qwen3-32b",
+    "OpenAI GPT-OSS 120B (OpenAI - Heavy & Complex - Best for deep reasoning)": "openai/gpt-oss-120b",
+    "Qwen 3.8 27B (Alibaba - Phenomenal context handling)": "qwen/qwen3.8-27b",
+    "OpenAI GPT-OSS 20B (OpenAI - Light & Fast - Best for quick summaries)": "openai/gpt-oss-20b",
+    "ALLaM 2 7B (SDAIA - Lightweight alternative)": "allam-2-7b",
 }
 
 PORTFOLIO_LIMIT = 50000

@@ -29,10 +29,10 @@ interface Message {
 
 const PORTFOLIO_LIMIT = 50000
 const MODEL_OPTIONS = [
-  { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', dot: 'bg-green-500' },
-  { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', dot: 'bg-blue-500' },
-  { id: 'qwen/qwen3-32b', label: 'Qwen 3 32B', dot: 'bg-amber-500' },
-  { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B', dot: 'bg-violet-500' },
+  { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (Reasoning)', dot: 'bg-green-500' },
+  { id: 'qwen/qwen3.8-27b', label: 'Qwen 3.8 27B', dot: 'bg-amber-500' },
+  { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B (Fast)', dot: 'bg-blue-500' },
+  { id: 'allam-2-7b', label: 'ALLaM 2 7B', dot: 'bg-violet-500' },
 ] as const
 
 type SetState<T> = Dispatch<SetStateAction<T>>

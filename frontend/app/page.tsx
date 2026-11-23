@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { Sidebar, ChatArea } from '@/components/nexus-dashboard'
 
 export default function Home() {
-  const [selectedModel, setSelectedModel] = useState('llama-3.3-70b-versatile')
+  const [selectedModel, setSelectedModel] = useState('openai/gpt-oss-120b')
   const [ragEnabled, setRagEnabled] = useState(true)
   const [currentDeviceTokens, setCurrentDeviceTokens] = useState(0)
   const [resetSignal, setResetSignal] = useState(0)

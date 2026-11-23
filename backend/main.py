@@ -3,21 +3,23 @@ import re
 import warnings
 import tempfile
 from pathlib import Path
+from typing import Any, List
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", module="pydantic")
 
 import tiktoken
 from dotenv import load_dotenv
+from fastembed import TextEmbedding
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from llama_index.core import Settings, StorageContext, VectorStoreIndex
+from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.llms import ChatMessage, MessageRole
-from llama_index.embeddings.fastembed import FastEmbedEmbedding
 from llama_index.llms.groq import Groq
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_parse import LlamaParse
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 from qdrant_client import QdrantClient
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
@@ -35,7 +37,27 @@ PORTFOLIO_LIMIT = 50000
 qdrant_client = QdrantClient(location=":memory:")
 tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo").encode
 
-Settings.embed_model = FastEmbedEmbedding(model_name="BAAI/bge-small-en-v1.5")
+class LocalFastEmbedEmbedding(BaseEmbedding):
+    _model: TextEmbedding = PrivateAttr()
+
+    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5", **kwargs: Any) -> None:
+        super().__init__(model_name=model_name, **kwargs)
+        self._model = TextEmbedding(model_name=model_name)
+
+    def _get_query_embedding(self, query: str) -> List[float]:
+        return next(self._model.query_embed(query)).tolist()
+
+    async def _aget_query_embedding(self, query: str) -> List[float]:
+        return self._get_query_embedding(query)
+
+    def _get_text_embedding(self, text: str) -> List[float]:
+        return next(self._model.passage_embed([text])).tolist()
+
+    def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+        return [vec.tolist() for vec in self._model.passage_embed(texts)]
+
+
+Settings.embed_model = LocalFastEmbedEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
 class ChatRequest(BaseModel):
     message: str
@@ -65,6 +87,11 @@ def get_query_engine(collection_name: str):
     )
     index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
     return index.as_query_engine(similarity_top_k=5)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 @app.post("/api/chat")
@@ -122,7 +149,12 @@ async def chat(request: ChatRequest):
         raise
     except Exception as e:
         error_msg = str(e).lower()
-        if "model_decommissioned" in error_msg or "decommissioned" in error_msg:
+        if (
+            "model_decommissioned" in error_msg
+            or "decommissioned" in error_msg
+            or "model_not_found" in error_msg
+            or "does not exist" in error_msg
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Selected model is no longer available. Please choose another model from the dropdown.",
